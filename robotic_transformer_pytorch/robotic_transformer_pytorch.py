@@ -36,8 +36,8 @@ def posemb_sincos_1d(seq, dim, temperature = 10000, device = None, dtype = torch
     omega = torch.arange(dim // 2, device = device) / (dim // 2 - 1)
     omega = 1. / (temperature ** omega)
 
-    n = n[:, None] * omega[None, :]
-    pos_emb = torch.cat((n.sin(), n.cos()), dim = 1)
+    n = n[:, None] * omega[None, :] # (6,1)*(1,384) = (6,384)
+    pos_emb = torch.cat((n.sin(), n.cos()), dim = 1) # pos_emb.shape:torch.Size([6, 768]) n.shape:torch.Size([6, 384])
     return pos_emb.type(dtype)
 
 # helper classes
@@ -604,29 +604,29 @@ class RT1(nn.Module):
             cond_fns = vit_cond_fns,
             cond_drop_prob = cond_drop_prob,
             return_embeddings = True
-        )
+        )   # torch.Size([12, 768, 7, 7])
 
-        tokens = unpack_one(tokens, packed_shape, '* c h w')
-        learned_tokens = self.token_learner(tokens)
+        tokens = unpack_one(tokens, packed_shape, '* c h w')    # torch.Size([2, 6, 768, 7, 7])
+        learned_tokens = self.token_learner(tokens) # torch.Size([2, 6, 768, 8])
 
-        learned_tokens = rearrange(learned_tokens, 'b f c n -> b (f n) c')
+        learned_tokens = rearrange(learned_tokens, 'b f c n -> b (f n) c')  # torch.Size([2, 48, 768])
 
         # causal attention mask
 
-        attn_mask = torch.ones((frames, frames), dtype = torch.bool, device = device).triu(1)
-        attn_mask = repeat(attn_mask, 'i j -> (i r1) (j r2)', r1 = self.num_learned_tokens, r2 = self.num_learned_tokens)
+        attn_mask = torch.ones((frames, frames), dtype = torch.bool, device = device).triu(1)   # attn_mask.shape = (6,6)
+        attn_mask = repeat(attn_mask, 'i j -> (i r1) (j r2)', r1 = self.num_learned_tokens, r2 = self.num_learned_tokens) # torch.Size([48, 48]),相对于每个元素做了一个r1*r2的长宽块的复制
 
         # sinusoidal positional embedding
 
-        pos_emb = posemb_sincos_1d(frames, learned_tokens.shape[-1], dtype = learned_tokens.dtype, device = learned_tokens.device)
+        pos_emb = posemb_sincos_1d(frames, learned_tokens.shape[-1], dtype = learned_tokens.dtype, device = learned_tokens.device)  # torch.Size([6, 768])
 
-        learned_tokens = learned_tokens + repeat(pos_emb, 'n d -> (n r) d', r = self.num_learned_tokens)
+        learned_tokens = learned_tokens + repeat(pos_emb, 'n d -> (n r) d', r = self.num_learned_tokens) # torch.Size([2, 48, 768]) + torch.Size([48, 768])
 
         # attention
 
-        attended_tokens = self.transformer(learned_tokens, cond_fns = transformer_cond_fns, attn_mask = ~attn_mask)
+        attended_tokens = self.transformer(learned_tokens, cond_fns = transformer_cond_fns, attn_mask = ~attn_mask)    # attended_tokens.shape:torch.Size([2, 48, 768])
 
-        pooled = reduce(attended_tokens, 'b (f n) d -> b f d', 'mean', f = frames)
+        pooled = reduce(attended_tokens, 'b (f n) d -> b f d', 'mean', f = frames)  # torch.Size([2, 6, 768])
 
-        logits = self.to_logits(pooled)
+        logits = self.to_logits(pooled) # torch.Size([2, 6, 11, 256])
         return logits
